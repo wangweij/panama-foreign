@@ -37,6 +37,8 @@ module jdk.security.auth {
 
     requires transitive java.naming;
 
+    requires jdk.incubator.foreign;
+
     exports com.sun.security.auth;
     exports com.sun.security.auth.callback;
     exports com.sun.security.auth.login;

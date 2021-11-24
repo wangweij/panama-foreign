@@ -25,13 +25,65 @@
 
 package com.sun.security.auth.module;
 
+import com.sun.security.auth.module.unix.pwd.passwd;
+import jdk.incubator.foreign.CLinker;
+import jdk.incubator.foreign.FunctionDescriptor;
+import jdk.incubator.foreign.MemoryAddress;
+import jdk.incubator.foreign.MemoryLayout;
+import jdk.incubator.foreign.MemorySegment;
+import jdk.incubator.foreign.ResourceScope;
+import jdk.incubator.foreign.SegmentAllocator;
+import jdk.incubator.foreign.ValueLayout;
+
+import java.util.Arrays;
+
+import static com.sun.security.auth.module.unix.pwd.pwd_h.getpwuid_r;
+import static com.sun.security.auth.module.unix.unistd.unistd_h.*;
+import static jdk.incubator.foreign.MemoryAddress.NULL;
+import static jdk.incubator.foreign.ValueLayout.*;
+
 /**
  * This class implementation retrieves and makes available Unix
  * UID/GID/groups information for the current user.
  */
 public class UnixSystem {
 
-    private native void getUnixInfo();
+    private void getUnixInfo() {
+        try {
+            getuid$MH();
+        } catch (NullPointerException npe) {
+            throw new UnsatisfiedLinkError();
+        }
+        try (ResourceScope scope = ResourceScope.newConfinedScope()) {
+            var allocator = SegmentAllocator.nativeAllocator(scope);
+            int groupnum = getgroups(0, NULL);
+            var gs = allocator.allocateArray(JAVA_INT, groupnum);
+            getgroups(groupnum, gs);
+
+            groups = new long[groupnum];
+            for (int i = 0; i < groupnum; i++) {
+                groups[i] = gs.getAtIndex(JAVA_INT, i);
+            }
+
+            var pwd = passwd.allocate(scope);
+            var res = allocator.allocate(ADDRESS);
+            int uidHere = getuid();
+            int out = getpwuid_r(uidHere, pwd, allocator.allocate(1024), 1024, res);
+            if (out == 0 && res.get(C_LONG, 0) != 0) {
+                var rr = passwd.ofAddress(res.get(ADDRESS, 0), scope);
+                uid = passwd.pw_uid$get(rr);
+                gid = passwd.pw_gid$get(rr);
+                username = passwd.pw_name$get(rr).getUtf8String(0);
+            } else {
+                uid = uidHere;
+                gid = getgid();
+            }
+        } catch (Throwable t) {
+            uid = gid = 0;
+            groups = null;
+            username = null;
+        }
+    }
 
     // Warning: the following 4 fields are used by Unix.c
 
@@ -48,11 +100,10 @@ public class UnixSystem {
     protected long[] groups;
 
     /**
-     * Instantiate a {@code UnixSystem} and load
-     * the native library to access the underlying system information.
+     * Instantiate a {@code UnixSystem} and access the underlying
+     * system information.
      */
     public UnixSystem() {
-        System.loadLibrary("jaas");
         getUnixInfo();
     }
 
